@@ -1,0 +1,672 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>eBPF Sentinel - 实时系统调用与网络监控</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0f172a;
+            color: #e2e8f0;
+            padding: 20px;
+        }
+        .container {
+            max-width: 1600px;
+            margin: 0 auto;
+        }
+        h1 {
+            text-align: center;
+            margin-bottom: 10px;
+            color: #38bdf8;
+            font-size: 2.5rem;
+        }
+        .subtitle {
+            text-align: center;
+            color: #94a3b8;
+            margin-bottom: 30px;
+        }
+        .connection-status {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 0.875rem;
+            font-weight: 600;
+        }
+        .connection-status.connected {
+            background: #065f46;
+            color: #34d399;
+        }
+        .connection-status.disconnected {
+            background: #7f1d1d;
+            color: #f87171;
+        }
+        .connection-status.connecting {
+            background: #92400e;
+            color: #fbbf24;
+        }
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        .stat-card {
+            background: #1e293b;
+            padding: 20px;
+            border-radius: 12px;
+            text-align: center;
+            border: 1px solid #334155;
+            transition: transform 0.2s;
+        }
+        .stat-card:hover {
+            transform: translateY(-2px);
+        }
+        .stat-card h3 {
+            color: #94a3b8;
+            font-size: 0.875rem;
+            margin-bottom: 8px;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        .stat-card .value {
+            font-size: 2rem;
+            font-weight: bold;
+            color: #38bdf8;
+        }
+        .controls {
+            background: #1e293b;
+            padding: 20px;
+            border-radius: 12px;
+            margin-bottom: 20px;
+            border: 1px solid #334155;
+            display: flex;
+            gap: 15px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        .btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: 600;
+            transition: all 0.2s;
+        }
+        .btn-primary {
+            background: #3b82f6;
+            color: white;
+        }
+        .btn-primary:hover {
+            background: #2563eb;
+        }
+        .btn-danger {
+            background: #ef4444;
+            color: white;
+        }
+        .btn-danger:hover {
+            background: #dc2626;
+        }
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        .tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        .tab {
+            padding: 12px 24px;
+            background: #1e293b;
+            border: 1px solid #334155;
+            border-radius: 8px;
+            cursor: pointer;
+            color: #94a3b8;
+            font-weight: 600;
+            transition: all 0.2s;
+        }
+        .tab:hover {
+            background: #334155;
+        }
+        .tab.active {
+            background: #3b82f6;
+            color: white;
+            border-color: #3b82f6;
+        }
+        .events-section {
+            background: #1e293b;
+            border-radius: 12px;
+            padding: 20px;
+            border: 1px solid #334155;
+        }
+        .events-section h2 {
+            margin-bottom: 20px;
+            color: #38bdf8;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .events-container {
+            max-height: 600px;
+            overflow-y: auto;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        th, td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #334155;
+        }
+        th {
+            color: #94a3b8;
+            font-weight: 600;
+            text-transform: uppercase;
+            font-size: 0.75rem;
+            letter-spacing: 0.05em;
+            position: sticky;
+            top: 0;
+            background: #1e293b;
+        }
+        tr {
+            animation: fadeIn 0.3s ease-in;
+        }
+        tr:hover {
+            background: #334155;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateX(-10px); }
+            to { opacity: 1; transform: translateX(0); }
+        }
+        .pid {
+            color: #f472b6;
+            font-family: monospace;
+            font-weight: 600;
+        }
+        .ppid {
+            color: #a78bfa;
+            font-family: monospace;
+        }
+        .comm {
+            color: #4ade80;
+            font-weight: 600;
+        }
+        .argv0 {
+            color: #fbbf24;
+            font-family: monospace;
+            max-width: 400px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .time {
+            color: #94a3b8;
+            font-size: 0.875rem;
+        }
+        .badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+        .badge-execve {
+            background: #3b82f6;
+            color: white;
+        }
+        .badge-network {
+            background: #10b981;
+            color: white;
+        }
+        .badge-tcp {
+            background: #8b5cf6;
+            color: white;
+        }
+        .badge-udp {
+            background: #f59e0b;
+            color: white;
+        }
+        .badge-icmp {
+            background: #6b7280;
+            color: white;
+        }
+        .ip {
+            font-family: monospace;
+            color: #38bdf8;
+        }
+        .port {
+            font-family: monospace;
+            color: #a78bfa;
+        }
+        .direction {
+            font-size: 0.75rem;
+            padding: 2px 6px;
+            border-radius: 4px;
+        }
+        .direction-ingress {
+            background: #065f46;
+            color: #34d399;
+        }
+        .direction-egress {
+            background: #1e3a8a;
+            color: #60a5fa;
+        }
+        .packet-size {
+            font-family: monospace;
+            color: #f472b6;
+        }
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: #64748b;
+        }
+        .empty-state-icon {
+            font-size: 3rem;
+            margin-bottom: 16px;
+        }
+        .rate-indicator {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.875rem;
+            color: #94a3b8;
+        }
+        .rate-bar {
+            width: 100px;
+            height: 4px;
+            background: #334155;
+            border-radius: 2px;
+            overflow: hidden;
+        }
+        .rate-fill {
+            height: 100%;
+            background: #38bdf8;
+            transition: width 0.3s;
+        }
+        .hidden {
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>eBPF Sentinel</h1>
+        <p class="subtitle">
+            实时系统调用与网络监控 
+            <span id="connectionStatus" class="connection-status connecting">连接中...</span>
+        </p>
+        
+        <div class="stats">
+            <div class="stat-card">
+                <h3>总事件数</h3>
+                <div class="value" id="totalEvents">0</div>
+            </div>
+            <div class="stat-card">
+                <h3>进程事件</h3>
+                <div class="value" id="execveEvents">0</div>
+            </div>
+            <div class="stat-card">
+                <h3>网络事件</h3>
+                <div class="value" id="networkEvents">0</div>
+            </div>
+            <div class="stat-card">
+                <h3>每秒事件</h3>
+                <div class="value" id="eventsPerSecond">0</div>
+            </div>
+            <div class="stat-card">
+                <h3>运行时间</h3>
+                <div class="value" id="uptime">00:00</div>
+            </div>
+        </div>
+
+        <div class="controls">
+            <button class="btn btn-primary" id="clearBtn" onclick="clearEvents()">清空事件</button>
+            <button class="btn btn-danger" id="reconnectBtn" onclick="reconnect()">重新连接</button>
+            <div class="rate-indicator">
+                <span>事件速率:</span>
+                <div class="rate-bar">
+                    <div class="rate-fill" id="rateFill" style="width: 0%"></div>
+                </div>
+                <span id="rateValue">0/s</span>
+            </div>
+        </div>
+
+        <div class="tabs">
+            <div class="tab active" onclick="switchTab('all')">全部事件</div>
+            <div class="tab" onclick="switchTab('execve')">进程事件</div>
+            <div class="tab" onclick="switchTab('network')">网络事件</div>
+        </div>
+
+        <!-- 全部事件 -->
+        <div id="all-events" class="events-section">
+            <h2>
+                全部事件
+                <span style="font-size: 0.875rem; color: #64748b;">(最多显示500条)</span>
+            </h2>
+            <div class="events-container">
+                <table id="allEventsTable">
+                    <thead>
+                        <tr>
+                            <th>类型</th>
+                            <th>时间</th>
+                            <th>详情</th>
+                        </tr>
+                    </thead>
+                    <tbody id="allEventsBody">
+                    </tbody>
+                </table>
+                <div id="allEmptyState" class="empty-state">
+                    <div class="empty-state-icon">📡</div>
+                    <p>等待事件...</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- 进程事件 -->
+        <div id="execve-events" class="events-section hidden">
+            <h2>
+                进程事件
+                <span style="font-size: 0.875rem; color: #64748b;">(execve系统调用)</span>
+            </h2>
+            <div class="events-container">
+                <table id="execveTable">
+                    <thead>
+                        <tr>
+                            <th>类型</th>
+                            <th>时间</th>
+                            <th>PID</th>
+                            <th>PPID</th>
+                            <th>进程名</th>
+                            <th>命令</th>
+                        </tr>
+                    </thead>
+                    <tbody id="execveBody">
+                    </tbody>
+                </table>
+                <div id="execveEmptyState" class="empty-state">
+                    <div class="empty-state-icon">⚙️</div>
+                    <p>等待进程事件...</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- 网络事件 -->
+        <div id="network-events" class="events-section hidden">
+            <h2>
+                网络事件
+                <span style="font-size: 0.875rem; color: #64748b;">(TCP/UDP/ICMP)</span>
+            </h2>
+            <div class="events-container">
+                <table id="networkTable">
+                    <thead>
+                        <tr>
+                            <th>类型</th>
+                            <th>时间</th>
+                            <th>PID</th>
+                            <th>协议</th>
+                            <th>方向</th>
+                            <th>源地址</th>
+                            <th>目的地址</th>
+                            <th>大小</th>
+                            <th>进程</th>
+                        </tr>
+                    </thead>
+                    <tbody id="networkBody">
+                    </tbody>
+                </table>
+                <div id="networkEmptyState" class="empty-state">
+                    <div class="empty-state-icon">🌐</div>
+                    <p>等待网络事件...</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let ws = null;
+        let allEvents = [];
+        let execveEvents = [];
+        let networkEvents = [];
+        let currentTab = 'all';
+        let startTime = Date.now();
+        let eventCountLastSecond = 0;
+        let lastRateUpdate = Date.now();
+        
+        // 连接WebSocket
+        function connect() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${window.location.host}/ws`;
+            
+            updateConnectionStatus('connecting', '连接中...');
+            
+            ws = new WebSocket(wsUrl);
+            
+            ws.onopen = () => {
+                console.log('WebSocket connected');
+                updateConnectionStatus('connected', '已连接');
+            };
+            
+            ws.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    handleEvent(data);
+                } catch (e) {
+                    console.error('Failed to parse message:', e);
+                }
+            };
+            
+            ws.onclose = () => {
+                console.log('WebSocket disconnected');
+                updateConnectionStatus('disconnected', '已断开');
+                setTimeout(connect, 3000);
+            };
+            
+            ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
+                updateConnectionStatus('disconnected', '错误');
+            };
+        }
+        
+        // 更新连接状态
+        function updateConnectionStatus(status, text) {
+            const el = document.getElementById('connectionStatus');
+            el.className = `connection-status ${status}`;
+            el.textContent = text;
+        }
+        
+        // 切换标签页
+        function switchTab(tab) {
+            currentTab = tab;
+            
+            // 更新标签样式
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            event.target.classList.add('active');
+            
+            // 显示/隐藏对应内容
+            document.getElementById('all-events').classList.toggle('hidden', tab !== 'all');
+            document.getElementById('execve-events').classList.toggle('hidden', tab !== 'execve');
+            document.getElementById('network-events').classList.toggle('hidden', tab !== 'network');
+        }
+        
+        // 处理事件
+        function handleEvent(data) {
+            eventCountLastSecond++;
+            
+            if (!data.type || !data.data) return;
+            
+            const event = {
+                type: data.type,
+                timestamp: Date.now(),
+                ...data.data
+            };
+            
+            allEvents.unshift(event);
+            if (allEvents.length > 500) allEvents = allEvents.slice(0, 500);
+            
+            if (data.type === 'execve') {
+                execveEvents.unshift(event);
+                if (execveEvents.length > 500) execveEvents = execveEvents.slice(0, 500);
+                renderExecveEvent(event);
+            } else if (data.type === 'network') {
+                networkEvents.unshift(event);
+                if (networkEvents.length > 500) networkEvents = networkEvents.slice(0, 500);
+                renderNetworkEvent(event);
+            }
+            
+            renderAllEvent(event);
+            updateStats();
+        }
+        
+        // 渲染全部事件列表
+        function renderAllEvent(event) {
+            const tbody = document.getElementById('allEventsBody');
+            const emptyState = document.getElementById('allEmptyState');
+            
+            emptyState.style.display = 'none';
+            
+            const row = document.createElement('tr');
+            const time = new Date(event.timestamp).toLocaleTimeString('zh-CN');
+            
+            let details = '';
+            if (event.type === 'execve') {
+                details = `PID=${event.pid} PPID=${event.ppid} ${escapeHtml(event.comm)}: ${escapeHtml(event.argv0)}`;
+            } else if (event.type === 'network') {
+                details = `${event.protocol} ${event.direction} ${event.src_ip}:${event.src_port} -> ${event.dst_ip}:${event.dst_port} (${event.packet_size} bytes)`;
+            }
+            
+            row.innerHTML = `
+                <td><span class="badge badge-${event.type}">${event.type}</span></td>
+                <td class="time">${time}</td>
+                <td>${details}</td>
+            `;
+            
+            tbody.insertBefore(row, tbody.firstChild);
+            while (tbody.children.length > 500) tbody.removeChild(tbody.lastChild);
+        }
+        
+        // 渲染进程事件
+        function renderExecveEvent(event) {
+            const tbody = document.getElementById('execveBody');
+            const emptyState = document.getElementById('execveEmptyState');
+            
+            emptyState.style.display = 'none';
+            
+            const row = document.createElement('tr');
+            const time = new Date(event.timestamp).toLocaleTimeString('zh-CN');
+            
+            row.innerHTML = `
+                <td><span class="badge badge-execve">execve</span></td>
+                <td class="time">${time}</td>
+                <td class="pid">${event.pid}</td>
+                <td class="ppid">${event.ppid}</td>
+                <td class="comm">${escapeHtml(event.comm)}</td>
+                <td class="argv0" title="${escapeHtml(event.argv0)}">${escapeHtml(event.argv0)}</td>
+            `;
+            
+            tbody.insertBefore(row, tbody.firstChild);
+            while (tbody.children.length > 500) tbody.removeChild(tbody.lastChild);
+        }
+        
+        // 渲染网络事件
+        function renderNetworkEvent(event) {
+            const tbody = document.getElementById('networkBody');
+            const emptyState = document.getElementById('networkEmptyState');
+            
+            emptyState.style.display = 'none';
+            
+            const row = document.createElement('tr');
+            const time = new Date(event.timestamp).toLocaleTimeString('zh-CN');
+            const protocolClass = `badge-${event.protocol.toLowerCase()}`;
+            const directionClass = event.direction === 'ingress' ? 'direction-ingress' : 'direction-egress';
+            
+            row.innerHTML = `
+                <td><span class="badge badge-network">network</span></td>
+                <td class="time">${time}</td>
+                <td class="pid">${event.pid}</td>
+                <td><span class="badge ${protocolClass}">${event.protocol}</span></td>
+                <td><span class="direction ${directionClass}">${event.direction}</span></td>
+                <td class="ip">${event.src_ip}:${event.src_port}</td>
+                <td class="ip">${event.dst_ip}:${event.dst_port}</td>
+                <td class="packet-size">${event.packet_size}</td>
+                <td class="comm">${escapeHtml(event.comm)}</td>
+            `;
+            
+            tbody.insertBefore(row, tbody.firstChild);
+            while (tbody.children.length > 500) tbody.removeChild(tbody.lastChild);
+        }
+        
+        // 更新统计
+        function updateStats() {
+            document.getElementById('totalEvents').textContent = allEvents.length;
+            document.getElementById('execveEvents').textContent = execveEvents.length;
+            document.getElementById('networkEvents').textContent = networkEvents.length;
+            
+            const uptime = Math.floor((Date.now() - startTime) / 1000);
+            const minutes = Math.floor(uptime / 60).toString().padStart(2, '0');
+            const seconds = (uptime % 60).toString().padStart(2, '0');
+            document.getElementById('uptime').textContent = `${minutes}:${seconds}`;
+        }
+        
+        // 更新速率指示器
+        function updateRate() {
+            const now = Date.now();
+            const elapsed = (now - lastRateUpdate) / 1000;
+            
+            if (elapsed >= 1) {
+                const rate = Math.round(eventCountLastSecond / elapsed);
+                document.getElementById('eventsPerSecond').textContent = rate;
+                document.getElementById('rateValue').textContent = `${rate}/s`;
+                
+                const percentage = Math.min(rate, 100);
+                document.getElementById('rateFill').style.width = `${percentage}%`;
+                
+                eventCountLastSecond = 0;
+                lastRateUpdate = now;
+            }
+        }
+        
+        // 清空事件
+        function clearEvents() {
+            allEvents = [];
+            execveEvents = [];
+            networkEvents = [];
+            
+            document.getElementById('allEventsBody').innerHTML = '';
+            document.getElementById('execveBody').innerHTML = '';
+            document.getElementById('networkBody').innerHTML = '';
+            
+            document.getElementById('allEmptyState').style.display = 'block';
+            document.getElementById('execveEmptyState').style.display = 'block';
+            document.getElementById('networkEmptyState').style.display = 'block';
+            
+            updateStats();
+        }
+        
+        // 重新连接
+        function reconnect() {
+            if (ws) ws.close();
+            connect();
+        }
+        
+        // HTML转义
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+        
+        // 启动
+        connect();
+        setInterval(updateRate, 100);
+        setInterval(updateStats, 1000);
+    </script>
+</body>
+</html>
