@@ -47,7 +47,7 @@ ebpf-Sentinel/
 - `github.com/gin-gonic/gin`: Web 框架
 - `github.com/gorilla/websocket`: WebSocket 库
 - `gorm.io/gorm`: ORM 框架
-- `github.com/shirou/gopsutil/v3`: 系统信息采集
+- `github.com/shirou/gopsutil/v3`: 网络速度采集和CPU监控回退
 
 ### 1.3 sentinel.db
 **作用**: SQLite 数据库文件，存储事件数据
@@ -123,8 +123,29 @@ struct net_event {
 - `ip_whitelist`: Hash Map，IP 白名单
 - `port_whitelist`: Hash Map，端口白名单
 - `net_monitoring_enabled`: Array Map，监控开关
+### 2.3 cpu.c
+**作用**: CPU使用率监控 eBPF 程序
 
-### 2.3 vmlinux.h
+**功能**:
+- 挂载到 `sched_switch` tracepoint
+- 统计每个CPU核心的忙碌和空闲时间
+- 通过PERCPU maps实现无锁统计
+- 计算整体CPU使用率
+
+**关键结构体**:
+```c
+struct cpu_stats {
+    u64 busy_ns;      // 忙碌时间（纳秒）
+    u64 idle_ns;      // 空闲时间（纳秒）
+    u64 last_update;  // 最后更新时间戳
+};
+```
+
+**BPF Maps**:
+- `cpu_stats_map`: PERCPU Hash Map，存储每个CPU核心的统计信息
+- `cpu_usage`: PERCPU Array，存储每个核心的CPU使用率（百分比）
+
+### 2.4 vmlinux.h
 **作用**: 内核数据结构头文件
 
 **包含**:
@@ -190,10 +211,10 @@ type Plugin interface {
 **作用**: 系统监控插件实现
 
 **功能**:
-- 采集 CPU 使用率
-- 采集网络速度
-- 使用 gopsutil 库
+- 采集 CPU 使用率（通过 eBPF `GetCPUUsage` 函数注入）
+- 采集网络速度（使用 gopsutil 库）
 - 定时发送系统指标事件
+- 支持 eBPF 失败时回退到 gopsutil 方式
 
 ### 3.3 websocket/hub.go
 **作用**: WebSocket 连接管理
@@ -271,7 +292,8 @@ main.go
 │   ├── execve_plugin.go (execve插件)
 │   └── system_plugin.go (系统监控插件)
 ├── ebpf/execve.c → execve_x86_bpfel.go (bpf2go生成)
-└── ebpf/network.c → network_bpfel_x86.go (bpf2go生成)
+├── ebpf/network.c → network_bpfel_x86.go (bpf2go生成)
+└── ebpf/cpu.c → cpu_bpfel.go (bpf2go生成)
 ```
 
 ---

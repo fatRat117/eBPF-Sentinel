@@ -679,7 +679,8 @@ eBPF-Sentinel 监控三类系统活动：
 - 网络入站速度（KB/s）
 - 网络出站速度（KB/s）
 
-**监控方式**: gopsutil 库（用户态）
+**说明**: CPU使用率通过eBPF tracepoint sched_switch采集，网络速度通过gopsutil库采集。
+**监控方式**: eBPF tracepoint sched_switch (CPU) 和 gopsutil 库（网络速度）
 
 **用途**:
 - 系统负载监控
@@ -723,7 +724,7 @@ T+10ms: curl 发送 HTTP 请求
 |---------|---------|--------|---------|
 | 进程监控 | eBPF/tracepoint | 实时 | 极低 |
 | 网络监控 | eBPF/TC | 实时 | 低（采样） |
-| 系统指标 | gopsutil | 1秒间隔 | 极低 |
+| 系统指标 | eBPF (CPU) + gopsutil (网络) | 1秒间隔 | 极低 |
 
 #### 6. 典型使用场景
 

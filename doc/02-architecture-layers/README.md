@@ -197,14 +197,14 @@ type Plugin interface {
 **职责**: 系统指标采集
 
 **功能**:
-- CPU 使用率采集
-- 网络速度计算
+- CPU 使用率采集（通过eBPF tracepoint sched_switch）
+- 网络速度计算（使用gopsutil库）
 - 定时发送事件
 
 **特点**:
-- 不依赖 eBPF
-- 使用 gopsutil 库
-- 纯用户态实现
+- CPU监控使用eBPF内核态实现
+- 网络速度使用gopsutil用户态采集
+- 支持eBPF失败时回退到gopsutil方式
 
 #### 3.5 插件管理器
 
@@ -303,7 +303,7 @@ type Plugin interface {
 #### 6.3 CPU 状态
 - CPU 时间片统计
 - `/proc/stat` 信息
-- gopsutil 采集
+- eBPF tracepoint 采集 (gopsutil 回退)
 
 #### 6.4 网络接口
 - 网卡统计信息
