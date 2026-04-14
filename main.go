@@ -7,7 +7,11 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"runtime"
+	"strconv"
 	"strings"
+	"sync"
+	"syscall"
 	"unsafe"
 
 	"github.com/cilium/ebpf"
@@ -15,32 +19,60 @@ import (
 	"github.com/cilium/ebpf/ringbuf"
 	"github.com/cilium/ebpf/rlimit"
 	"github.com/ebpf-sentinel/internal/models"
+	"github.com/ebpf-sentinel/internal/plugin"
 	"github.com/ebpf-sentinel/internal/websocket"
 	"github.com/gin-gonic/gin"
 )
 
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -target amd64 -cc clang -cflags "-O2 -g -Wall -D__TARGET_ARCH_x86" execve ebpf/execve.c
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -target amd64 -cc clang -cflags "-O2 -g -Wall -D__TARGET_ARCH_x86" network ebpf/network.c
-
+// execveEvent 对应eBPF中的execve事件结构体
+// 必须与ebpf/execve.c中的struct event完全匹配
 type execveEvent struct {
-	PID   uint32
-	PPID  uint32
-	Comm  [16]byte
-	Argv0 [128]byte
+	PID   uint32    // 进程ID
+	PPID  uint32    // 父进程ID
+	Comm  [16]byte  // 进程名（固定长度数组）
+	Argv0 [128]byte // 命令行参数（固定长度数组）
 }
 
+// networkEvent 对应eBPF中的网络事件结构体
+// 必须与ebpf/network.c中的struct net_event完全匹配
 type networkEvent struct {
-	PID        uint32
-	SrcIP      uint32
-	DstIP      uint32
-	SrcPort    uint16
-	DstPort    uint16
-	Protocol   uint8
-	Direction  uint8
-	PacketSize uint32
-	Comm       [16]byte
+	PID        uint32   // 进程ID
+	SrcIP      uint32   // 源IP地址（网络字节序）
+	DstIP      uint32   // 目的IP地址（网络字节序）
+	SrcPort    uint16   // 源端口
+	DstPort    uint16   // 目的端口
+	Protocol   uint8    // 传输层协议
+	Direction  uint8    // 方向：0=入站, 1=出站
+	PacketSize uint32   // 数据包大小
+	Comm       [16]byte // 进程名
 }
 
+// eBPF对象全局实例
+// 用于API接口操作BPF Maps
+var (
+	execveObjs   *execveObjects
+	networkObjs  *networkObjects
+	cpuObjs      *cpuObjects
+	execveLinks  []link.Link
+	networkLinks []link.Link
+	cpuLinks     []link.Link
+)
+
+var (
+	cpuPrevBusy []uint64
+	cpuPrevIdle []uint64
+	cpuUsageMu  sync.Mutex
+)
+
+// 内存中的策略配置（备用方案，当BPF Maps不可用时使用）
+var (
+	execveWhitelist = make(map[string]bool) // execve白名单
+	execveEnabled   = true                  // execve监控开关
+	networkEnabled  = true                  // 网络监控开关
+)
+
+// ipToString 将32位整数IP地址转换为点分十进制字符串
+// 注意：eBPF中存储的是网络字节序，这里已经通过bpf_ntohl转换为主机字节序
 func ipToString(ip uint32) string {
 	return fmt.Sprintf("%d.%d.%d.%d",
 		(ip>>24)&0xFF,
@@ -50,6 +82,7 @@ func ipToString(ip uint32) string {
 	)
 }
 
+// protocolToString 将协议号转换为可读字符串
 func protocolToString(p uint8) string {
 	switch p {
 	case 6:
@@ -64,6 +97,7 @@ func protocolToString(p uint8) string {
 }
 
 // getNetworkInterfaces 获取所有活动的网络接口
+// 排除回环接口(lo)和未启用的接口
 func getNetworkInterfaces() []*net.Interface {
 	ifaces, err := net.Interfaces()
 	if err != nil {
@@ -83,6 +117,7 @@ func getNetworkInterfaces() []*net.Interface {
 }
 
 // attachNetworkProgram 挂载网络eBPF程序到指定接口
+// isIngress: true表示入站程序，false表示出站程序
 func attachNetworkProgram(objs *networkObjects, ifaceIdx int, isIngress bool) (link.Link, error) {
 	var prog *ebpf.Program
 	var attachType ebpf.AttachType
@@ -96,6 +131,7 @@ func attachNetworkProgram(objs *networkObjects, ifaceIdx int, isIngress bool) (l
 	}
 
 	// 使用TCX（TC eXpress）API挂载
+	// TCX是较新的挂载方式，比传统tc filter更灵活
 	tcxOpts := link.TCXOptions{
 		Interface: ifaceIdx,
 		Program:   prog,
@@ -104,6 +140,240 @@ func attachNetworkProgram(objs *networkObjects, ifaceIdx int, isIngress bool) (l
 
 	return link.AttachTCX(tcxOpts)
 }
+
+// setupRoutes 配置Gin路由
+// 包括API接口和WebSocket端点
+func setupRoutes(r *gin.Engine, hub *websocket.Hub) {
+	// ========== 事件查询API ==========
+
+	// 获取最近的进程事件
+	r.GET("/api/events", func(c *gin.Context) {
+		events, err := models.GetRecentEvents(100)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, events)
+	})
+
+	// 获取最近的网络事件
+	r.GET("/api/network-events", func(c *gin.Context) {
+		events, err := models.GetRecentNetworkEvents(100)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, events)
+	})
+
+	// ========== 策略管理API ==========
+
+	// 获取execve监控白名单
+	r.GET("/api/policy/whitelist", func(c *gin.Context) {
+		whitelist := getWhitelist()
+		c.JSON(http.StatusOK, gin.H{"whitelist": whitelist})
+	})
+
+	// 添加进程到白名单
+	r.POST("/api/policy/whitelist", func(c *gin.Context) {
+		var req struct {
+			Comm string `json:"comm" binding:"required"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+
+		addToWhitelist(req.Comm)
+
+		c.JSON(http.StatusOK, gin.H{"message": "Added to whitelist", "comm": req.Comm})
+	})
+
+	// 从白名单移除进程
+	r.DELETE("/api/policy/whitelist/:comm", func(c *gin.Context) {
+		comm := c.Param("comm")
+		removeFromWhitelist(comm)
+		c.JSON(http.StatusOK, gin.H{"message": "Removed from whitelist", "comm": comm})
+	})
+
+	// 获取监控状态
+	r.GET("/api/policy/status", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{
+			"execve_enabled":  isExecveMonitoringEnabled(),
+			"network_enabled": isNetworkMonitoringEnabled(),
+		})
+	})
+
+	// 设置execve监控开关
+	r.POST("/api/policy/execve/:enabled", func(c *gin.Context) {
+		enabled := c.Param("enabled") == "true"
+		setExecveMonitoringEnabled(enabled)
+		c.JSON(http.StatusOK, gin.H{"execve_enabled": enabled})
+	})
+
+	// 设置网络监控开关
+	r.POST("/api/policy/network/:enabled", func(c *gin.Context) {
+		enabled := c.Param("enabled") == "true"
+		setNetworkMonitoringEnabled(enabled)
+		c.JSON(http.StatusOK, gin.H{"network_enabled": enabled})
+	})
+
+	// ========== 进程治理API ==========
+
+	// 终止进程
+	r.POST("/api/process/kill/:pid", func(c *gin.Context) {
+		pidStr := c.Param("pid")
+		pid, err := strconv.Atoi(pidStr)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid PID"})
+			return
+		}
+
+		// 发送SIGTERM信号终止进程
+		err = syscall.Kill(pid, syscall.SIGTERM)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"message": "Process terminated",
+			"pid":     pid,
+			"signal":  "SIGTERM",
+		})
+	})
+
+	// 强制终止进程（SIGKILL）
+	r.POST("/api/process/kill/:pid/force", func(c *gin.Context) {
+		pidStr := c.Param("pid")
+		pid, err := strconv.Atoi(pidStr)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid PID"})
+			return
+		}
+
+		err = syscall.Kill(pid, syscall.SIGKILL)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"message": "Process killed",
+			"pid":     pid,
+			"signal":  "SIGKILL",
+		})
+	})
+
+	// ========== WebSocket端点 ==========
+
+	r.GET("/ws", func(c *gin.Context) {
+		hub.ServeWs(c.Writer, c.Request)
+	})
+
+	// ========== 静态文件服务 ==========
+
+	r.Static("/assets", "./web/dist/assets")
+	r.StaticFile("/", "./web/dist/index.html")
+	r.NoRoute(func(c *gin.Context) {
+		c.File("./web/dist/index.html")
+	})
+}
+
+// ========== 策略管理函数 ==========
+
+// getWhitelist 获取白名单中的所有进程名
+func getWhitelist() []string {
+	var whitelist []string
+	for comm := range execveWhitelist {
+		whitelist = append(whitelist, comm)
+	}
+	return whitelist
+}
+
+// addToWhitelist 添加进程名到白名单
+// 白名单中的进程不会触发execve事件
+func addToWhitelist(comm string) {
+	execveWhitelist[comm] = true
+	log.Printf("[Policy] Added %s to whitelist", comm)
+}
+
+// removeFromWhitelist 从白名单移除进程名
+func removeFromWhitelist(comm string) {
+	delete(execveWhitelist, comm)
+	log.Printf("[Policy] Removed %s from whitelist", comm)
+}
+
+// isInWhitelist 检查进程名是否在白名单中
+func isInWhitelist(comm string) bool {
+	return execveWhitelist[comm]
+}
+
+// isExecveMonitoringEnabled 检查execve监控是否启用
+func isExecveMonitoringEnabled() bool {
+	return execveEnabled
+}
+
+// setExecveMonitoringEnabled 设置execve监控开关
+func setExecveMonitoringEnabled(enabled bool) {
+	execveEnabled = enabled
+	log.Printf("[Policy] Execve monitoring enabled: %v", enabled)
+}
+
+// isNetworkMonitoringEnabled 检查网络监控是否启用
+func isNetworkMonitoringEnabled() bool {
+	return networkEnabled
+}
+
+// setNetworkMonitoringEnabled 设置网络监控开关
+func setNetworkMonitoringEnabled(enabled bool) {
+	networkEnabled = enabled
+	log.Printf("[Policy] Network monitoring enabled: %v", enabled)
+}
+
+func getCPUUsage() float64 {
+	if cpuObjs == nil || cpuObjs.CpuStats == nil {
+		return 0
+	}
+
+	cpuUsageMu.Lock()
+	defer cpuUsageMu.Unlock()
+
+	var key uint32 = 0
+	var stats []cpuCpuStat
+	if err := cpuObjs.CpuStats.Lookup(key, &stats); err != nil {
+		log.Printf("[cpu] failed to lookup cpu stats: %v", err)
+		return 0
+	}
+
+	if len(stats) == 0 {
+		return 0
+	}
+
+	if len(cpuPrevBusy) != len(stats) {
+		cpuPrevBusy = make([]uint64, len(stats))
+		cpuPrevIdle = make([]uint64, len(stats))
+	}
+
+	var totalBusy, totalIdle float64
+	for i, stat := range stats {
+		deltaBusy := float64(stat.BusyNs - cpuPrevBusy[i])
+		deltaIdle := float64(stat.IdleNs - cpuPrevIdle[i])
+		totalBusy += deltaBusy
+		totalIdle += deltaIdle
+		cpuPrevBusy[i] = stat.BusyNs
+		cpuPrevIdle[i] = stat.IdleNs
+	}
+
+	total := totalBusy + totalIdle
+	if total <= 0 {
+		return 0
+	}
+
+	return (totalBusy / total) * 100
+}
+
+// ========== 主函数 ==========
 
 func main() {
 	// 初始化数据库
@@ -117,31 +387,47 @@ func main() {
 	hub := websocket.NewHub()
 	go hub.Run()
 
-	// 移除内存限制
+	// 创建事件通道（用于插件发送事件）
+	eventChan := make(chan *plugin.Event, 256)
+
+	// 启动事件分发器
+	go func() {
+		for event := range eventChan {
+			hub.Broadcast(map[string]interface{}{
+				"type": event.Type,
+				"data": event.Data,
+			})
+		}
+	}()
+
+	// 移除内存限制（eBPF程序需要锁定内存）
 	if err := rlimit.RemoveMemlock(); err != nil {
 		log.Fatalf("failed to remove memlock limit: %v", err)
 	}
 
-	// ========== 加载 execve eBPF 程序 ==========
-	execveObjs := execveObjects{}
-	if err := loadExecveObjects(&execveObjs, nil); err != nil {
+	// ========== 加载execve eBPF程序 ==========
+	execveObjs = &execveObjects{}
+	if err := loadExecveObjects(execveObjs, nil); err != nil {
 		log.Fatalf("failed to load execve objects: %v", err)
 	}
 	defer execveObjs.Close()
 
+	// 挂载execve跟踪点
 	execveTp, err := link.Tracepoint("syscalls", "sys_enter_execve", execveObjs.TracepointExecve, nil)
 	if err != nil {
 		log.Fatalf("failed to attach execve tracepoint: %v", err)
 	}
 	defer execveTp.Close()
+	execveLinks = append(execveLinks, execveTp)
 
+	// 打开execve事件Ring Buffer
 	execveRd, err := ringbuf.NewReader(execveObjs.Events)
 	if err != nil {
 		log.Fatalf("failed to open execve ring buffer: %v", err)
 	}
 	defer execveRd.Close()
 
-	// 读取execve事件
+	// 启动goroutine读取execve事件
 	go func() {
 		for {
 			record, err := execveRd.Read()
@@ -155,10 +441,22 @@ func main() {
 				continue
 			}
 
+			// 使用unsafe快速解析二进制数据
 			copy((*[152]byte)(unsafe.Pointer(&event))[:], record.RawSample)
 
+			// 将字节数组转换为字符串
 			comm := string(bytes.Trim(event.Comm[:], "\x00"))
 			argv0 := string(bytes.Trim(event.Argv0[:], "\x00"))
+
+			// 检查监控开关
+			if !isExecveMonitoringEnabled() {
+				continue
+			}
+
+			// 检查白名单
+			if isInWhitelist(comm) {
+				continue
+			}
 
 			// 保存到数据库
 			dbEvent := &models.ExecveEvent{
@@ -187,9 +485,9 @@ func main() {
 		}
 	}()
 
-	// ========== 加载 network eBPF 程序 ==========
-	networkObjs := networkObjects{}
-	if err := loadNetworkObjects(&networkObjs, nil); err != nil {
+	// ========== 加载network eBPF程序 ==========
+	networkObjs = &networkObjects{}
+	if err := loadNetworkObjects(networkObjs, nil); err != nil {
 		log.Printf("[network] failed to load network objects: %v", err)
 		log.Println("[network] Network monitoring disabled")
 	} else {
@@ -212,21 +510,23 @@ func main() {
 			// 尝试挂载到每个接口
 			for _, iface := range interfaces {
 				// 挂载ingress程序
-				ingressLink, err := attachNetworkProgram(&networkObjs, iface.Index, true)
+				ingressLink, err := attachNetworkProgram(networkObjs, iface.Index, true)
 				if err != nil {
 					log.Printf("[network] failed to attach ingress to %s: %v", iface.Name, err)
 					continue
 				}
 				defer ingressLink.Close()
+				networkLinks = append(networkLinks, ingressLink)
 
 				// 挂载egress程序
-				egressLink, err := attachNetworkProgram(&networkObjs, iface.Index, false)
+				egressLink, err := attachNetworkProgram(networkObjs, iface.Index, false)
 				if err != nil {
 					log.Printf("[network] failed to attach egress to %s: %v", iface.Name, err)
 					ingressLink.Close()
 					continue
 				}
 				defer egressLink.Close()
+				networkLinks = append(networkLinks, egressLink)
 
 				attachedInterfaces = append(attachedInterfaces, iface.Name)
 				log.Printf("[network] Successfully attached to %s", iface.Name)
@@ -238,13 +538,14 @@ func main() {
 			} else {
 				log.Printf("[network] Monitoring interfaces: %s", strings.Join(attachedInterfaces, ", "))
 
+				// 打开网络事件Ring Buffer
 				networkRd, err := ringbuf.NewReader(networkObjs.NetEvents)
 				if err != nil {
 					log.Printf("[network] failed to open network ring buffer: %v", err)
 				} else {
 					defer networkRd.Close()
 
-					// 读取network事件
+					// 启动goroutine读取网络事件
 					go func() {
 						for {
 							record, err := networkRd.Read()
@@ -258,7 +559,7 @@ func main() {
 								continue
 							}
 
-							// 解析网络事件结构
+							// 使用binary解析网络字节序数据
 							event.PID = binary.LittleEndian.Uint32(record.RawSample[0:4])
 							event.SrcIP = binary.LittleEndian.Uint32(record.RawSample[4:8])
 							event.DstIP = binary.LittleEndian.Uint32(record.RawSample[8:12])
@@ -269,6 +570,12 @@ func main() {
 							event.PacketSize = binary.LittleEndian.Uint32(record.RawSample[18:22])
 							copy(event.Comm[:], record.RawSample[22:38])
 
+							// 检查监控开关
+							if !isNetworkMonitoringEnabled() {
+								continue
+							}
+
+							// 转换数据格式
 							comm := string(bytes.Trim(event.Comm[:], "\x00"))
 							srcIP := ipToString(event.SrcIP)
 							dstIP := ipToString(event.DstIP)
@@ -319,41 +626,52 @@ func main() {
 		}
 	}
 
-	log.Println("eBPF Sentinel started! Monitoring execve syscalls and network traffic...")
+	cpuObjs = &cpuObjects{}
+	if err := loadCpuObjects(cpuObjs, nil); err != nil {
+		log.Printf("[cpu] failed to load cpu objects: %v", err)
+		log.Println("[cpu] CPU monitoring via eBPF disabled, falling back to gopsutil")
+	} else {
+		cpuTp, err := link.Tracepoint("sched", "sched_switch", cpuObjs.TracepointSchedSwitch, nil)
+		if err != nil {
+			log.Printf("[cpu] failed to attach sched_switch tracepoint: %v", err)
+			cpuObjs.Close()
+			cpuObjs = nil
+		} else {
+			defer cpuTp.Close()
+			cpuLinks = append(cpuLinks, cpuTp)
+			log.Println("[cpu] CPU monitoring eBPF program loaded")
+			log.Printf("[cpu] Monitoring %d CPUs via eBPF", runtime.NumCPU())
+		}
+	}
+
+	systemPlugin := plugin.NewSystemMonitorPlugin()
+
+	if cpuObjs != nil {
+		plugin.GetCPUUsage = getCPUUsage
+		log.Println("[cpu] eBPF CPU monitoring enabled for system plugin")
+	}
+
+	if err := systemPlugin.Load(); err != nil {
+		log.Printf("[system] Failed to load system plugin: %v", err)
+	} else {
+		if err := systemPlugin.Attach(); err != nil {
+			log.Printf("[system] Failed to attach system plugin: %v", err)
+		} else {
+			// 在独立goroutine中运行系统监控插件
+			go func() {
+				if err := systemPlugin.Start(eventChan); err != nil {
+					log.Printf("[system] System plugin stopped: %v", err)
+				}
+			}()
+			log.Println("[system] System monitor plugin started")
+		}
+	}
+
+	log.Println("eBPF Sentinel started! Monitoring execve syscalls, network traffic, and system metrics...")
 
 	// 设置Gin路由
 	r := gin.Default()
-
-	// API路由
-	r.GET("/api/events", func(c *gin.Context) {
-		events, err := models.GetRecentEvents(100)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		c.JSON(http.StatusOK, events)
-	})
-
-	r.GET("/api/network-events", func(c *gin.Context) {
-		events, err := models.GetRecentNetworkEvents(100)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		c.JSON(http.StatusOK, events)
-	})
-
-	// WebSocket路由
-	r.GET("/ws", func(c *gin.Context) {
-		hub.ServeWs(c.Writer, c.Request)
-	})
-
-	// 静态文件服务
-	r.Static("/assets", "./web/dist/assets")
-	r.StaticFile("/", "./web/dist/index.html")
-	r.NoRoute(func(c *gin.Context) {
-		c.File("./web/dist/index.html")
-	})
+	setupRoutes(r, hub)
 
 	log.Println("API server started on :8080")
 	log.Println("WebSocket endpoint: ws://localhost:8080/ws")

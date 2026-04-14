@@ -3,34 +3,39 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>eBPF Sentinel - 实时系统调用与网络监控</title>
+    <title>eBPF Sentinel - 实时系统监控与治理</title>
     <style>
         * {
             margin: 0;
             padding: 0;
             box-sizing: border-box;
         }
+        
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             background: #0f172a;
             color: #e2e8f0;
             padding: 20px;
         }
+        
         .container {
             max-width: 1600px;
             margin: 0 auto;
         }
+        
         h1 {
             text-align: center;
             margin-bottom: 10px;
             color: #38bdf8;
             font-size: 2.5rem;
         }
+        
         .subtitle {
             text-align: center;
             color: #94a3b8;
             margin-bottom: 30px;
         }
+        
         .connection-status {
             display: inline-block;
             padding: 4px 12px;
@@ -38,47 +43,68 @@
             font-size: 0.875rem;
             font-weight: 600;
         }
+        
         .connection-status.connected {
             background: #065f46;
             color: #34d399;
         }
+        
         .connection-status.disconnected {
             background: #7f1d1d;
             color: #f87171;
         }
+        
         .connection-status.connecting {
             background: #92400e;
             color: #fbbf24;
         }
+        
         .stats {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 20px;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 15px;
             margin-bottom: 30px;
         }
+        
         .stat-card {
             background: #1e293b;
-            padding: 20px;
+            padding: 15px;
             border-radius: 12px;
             text-align: center;
             border: 1px solid #334155;
             transition: transform 0.2s;
         }
+        
         .stat-card:hover {
             transform: translateY(-2px);
         }
+        
         .stat-card h3 {
             color: #94a3b8;
-            font-size: 0.875rem;
+            font-size: 0.75rem;
             margin-bottom: 8px;
             text-transform: uppercase;
             letter-spacing: 0.05em;
         }
+        
         .stat-card .value {
-            font-size: 2rem;
+            font-size: 1.75rem;
             font-weight: bold;
             color: #38bdf8;
         }
+        
+        .stat-card.system-metric {
+            border-color: #10b981;
+        }
+        
+        .stat-card.system-metric h3 {
+            color: #10b981;
+        }
+        
+        .stat-card.system-metric .value {
+            color: #34d399;
+        }
+        
         .controls {
             background: #1e293b;
             padding: 20px;
@@ -90,6 +116,7 @@
             align-items: center;
             flex-wrap: wrap;
         }
+        
         .btn {
             padding: 10px 20px;
             border: none;
@@ -98,29 +125,51 @@
             font-weight: 600;
             transition: all 0.2s;
         }
+        
         .btn-primary {
             background: #3b82f6;
             color: white;
         }
+        
         .btn-primary:hover {
             background: #2563eb;
         }
+        
         .btn-danger {
             background: #ef4444;
             color: white;
         }
+        
         .btn-danger:hover {
             background: #dc2626;
         }
+        
+        .btn-success {
+            background: #10b981;
+            color: white;
+        }
+        
+        .btn-success:hover {
+            background: #059669;
+        }
+        
         .btn:disabled {
             opacity: 0.5;
             cursor: not-allowed;
         }
+        
+        .btn-small {
+            padding: 4px 12px;
+            font-size: 0.75rem;
+        }
+        
         .tabs {
             display: flex;
             gap: 10px;
             margin-bottom: 20px;
+            flex-wrap: wrap;
         }
+        
         .tab {
             padding: 12px 24px;
             background: #1e293b;
@@ -131,20 +180,24 @@
             font-weight: 600;
             transition: all 0.2s;
         }
+        
         .tab:hover {
             background: #334155;
         }
+        
         .tab.active {
             background: #3b82f6;
             color: white;
             border-color: #3b82f6;
         }
+        
         .events-section {
             background: #1e293b;
             border-radius: 12px;
             padding: 20px;
             border: 1px solid #334155;
         }
+        
         .events-section h2 {
             margin-bottom: 20px;
             color: #38bdf8;
@@ -152,19 +205,23 @@
             justify-content: space-between;
             align-items: center;
         }
+        
         .events-container {
             max-height: 600px;
             overflow-y: auto;
         }
+        
         table {
             width: 100%;
             border-collapse: collapse;
         }
+        
         th, td {
             padding: 12px;
             text-align: left;
             border-bottom: 1px solid #334155;
         }
+        
         th {
             color: #94a3b8;
             font-weight: 600;
@@ -175,29 +232,36 @@
             top: 0;
             background: #1e293b;
         }
+        
         tr {
             animation: fadeIn 0.3s ease-in;
         }
+        
         tr:hover {
             background: #334155;
         }
+        
         @keyframes fadeIn {
             from { opacity: 0; transform: translateX(-10px); }
             to { opacity: 1; transform: translateX(0); }
         }
+        
         .pid {
             color: #f472b6;
             font-family: monospace;
             font-weight: 600;
         }
+        
         .ppid {
             color: #a78bfa;
             font-family: monospace;
         }
+        
         .comm {
             color: #4ade80;
             font-weight: 600;
         }
+        
         .argv0 {
             color: #fbbf24;
             font-family: monospace;
@@ -206,10 +270,12 @@
             text-overflow: ellipsis;
             white-space: nowrap;
         }
+        
         .time {
             color: #94a3b8;
             font-size: 0.875rem;
         }
+        
         .badge {
             display: inline-block;
             padding: 2px 8px;
@@ -218,60 +284,79 @@
             font-weight: 600;
             text-transform: uppercase;
         }
+        
         .badge-execve {
             background: #3b82f6;
             color: white;
         }
+        
         .badge-network {
             background: #10b981;
             color: white;
         }
+        
+        .badge-system {
+            background: #f59e0b;
+            color: white;
+        }
+        
         .badge-tcp {
             background: #8b5cf6;
             color: white;
         }
+        
         .badge-udp {
             background: #f59e0b;
             color: white;
         }
+        
         .badge-icmp {
             background: #6b7280;
             color: white;
         }
+        
         .ip {
             font-family: monospace;
             color: #38bdf8;
         }
+        
         .port {
             font-family: monospace;
             color: #a78bfa;
         }
+        
         .direction {
             font-size: 0.75rem;
             padding: 2px 6px;
             border-radius: 4px;
         }
+        
         .direction-ingress {
             background: #065f46;
             color: #34d399;
         }
+        
         .direction-egress {
             background: #1e3a8a;
             color: #60a5fa;
         }
+        
         .packet-size {
             font-family: monospace;
             color: #f472b6;
         }
+        
         .empty-state {
             text-align: center;
             padding: 60px 20px;
             color: #64748b;
         }
+        
         .empty-state-icon {
             font-size: 3rem;
             margin-bottom: 16px;
         }
+        
         .rate-indicator {
             display: flex;
             align-items: center;
@@ -279,6 +364,7 @@
             font-size: 0.875rem;
             color: #94a3b8;
         }
+        
         .rate-bar {
             width: 100px;
             height: 4px;
@@ -286,13 +372,187 @@
             border-radius: 2px;
             overflow: hidden;
         }
+        
         .rate-fill {
             height: 100%;
             background: #38bdf8;
             transition: width 0.3s;
         }
+        
         .hidden {
             display: none;
+        }
+        
+        /* 策略配置面板样式 */
+        .policy-panel {
+            background: #1e293b;
+            border-radius: 12px;
+            padding: 20px;
+            border: 1px solid #334155;
+            margin-bottom: 20px;
+        }
+        
+        .policy-panel h2 {
+            color: #38bdf8;
+            margin-bottom: 20px;
+        }
+        
+        .policy-section {
+            margin-bottom: 30px;
+        }
+        
+        .policy-section h3 {
+            color: #94a3b8;
+            font-size: 1rem;
+            margin-bottom: 15px;
+        }
+        
+        .policy-controls {
+            display: flex;
+            gap: 15px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        
+        .toggle-switch {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .toggle-switch input[type="checkbox"] {
+            width: 50px;
+            height: 26px;
+            appearance: none;
+            background: #475569;
+            border-radius: 13px;
+            position: relative;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+        
+        .toggle-switch input[type="checkbox"]:checked {
+            background: #10b981;
+        }
+        
+        .toggle-switch input[type="checkbox"]::after {
+            content: '';
+            position: absolute;
+            width: 22px;
+            height: 22px;
+            background: white;
+            border-radius: 50%;
+            top: 2px;
+            left: 2px;
+            transition: transform 0.3s;
+        }
+        
+        .toggle-switch input[type="checkbox"]:checked::after {
+            transform: translateX(24px);
+        }
+        
+        .whitelist-input {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+        
+        .whitelist-input input {
+            flex: 1;
+            padding: 10px;
+            background: #0f172a;
+            border: 1px solid #334155;
+            border-radius: 8px;
+            color: #e2e8f0;
+            font-size: 0.875rem;
+        }
+        
+        .whitelist-input input:focus {
+            outline: none;
+            border-color: #3b82f6;
+        }
+        
+        .whitelist-tags {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+        
+        .whitelist-tag {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 12px;
+            background: #334155;
+            border-radius: 6px;
+            font-size: 0.875rem;
+        }
+        
+        .whitelist-tag .remove {
+            cursor: pointer;
+            color: #ef4444;
+            font-weight: bold;
+        }
+        
+        /* 模态框样式 */
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.8);
+            z-index: 1000;
+            justify-content: center;
+            align-items: center;
+        }
+        
+        .modal.active {
+            display: flex;
+        }
+        
+        .modal-content {
+            background: #1e293b;
+            border-radius: 12px;
+            padding: 30px;
+            max-width: 500px;
+            width: 90%;
+            border: 1px solid #334155;
+        }
+        
+        .modal-content h3 {
+            color: #38bdf8;
+            margin-bottom: 20px;
+        }
+        
+        .modal-content p {
+            margin-bottom: 20px;
+            color: #94a3b8;
+        }
+        
+        .modal-actions {
+            display: flex;
+            gap: 10px;
+            justify-content: flex-end;
+        }
+        
+        .status-badge {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+        
+        .status-enabled {
+            background: #065f46;
+            color: #34d399;
+        }
+        
+        .status-disabled {
+            background: #7f1d1d;
+            color: #f87171;
         }
     </style>
 </head>
@@ -300,10 +560,11 @@
     <div class="container">
         <h1>eBPF Sentinel</h1>
         <p class="subtitle">
-            实时系统调用与网络监控 
+            实时系统监控与治理平台
             <span id="connectionStatus" class="connection-status connecting">连接中...</span>
         </p>
         
+        <!-- 统计卡片 -->
         <div class="stats">
             <div class="stat-card">
                 <h3>总事件数</h3>
@@ -317,6 +578,18 @@
                 <h3>网络事件</h3>
                 <div class="value" id="networkEvents">0</div>
             </div>
+            <div class="stat-card system-metric">
+                <h3>CPU使用率</h3>
+                <div class="value" id="cpuUsage">0%</div>
+            </div>
+            <div class="stat-card system-metric">
+                <h3>下载速度</h3>
+                <div class="value" id="netSpeedIn">0 KB/s</div>
+            </div>
+            <div class="stat-card system-metric">
+                <h3>上传速度</h3>
+                <div class="value" id="netSpeedOut">0 KB/s</div>
+            </div>
             <div class="stat-card">
                 <h3>每秒事件</h3>
                 <div class="value" id="eventsPerSecond">0</div>
@@ -327,6 +600,7 @@
             </div>
         </div>
 
+        <!-- 控制按钮 -->
         <div class="controls">
             <button class="btn btn-primary" id="clearBtn" onclick="clearEvents()">清空事件</button>
             <button class="btn btn-danger" id="reconnectBtn" onclick="reconnect()">重新连接</button>
@@ -339,10 +613,12 @@
             </div>
         </div>
 
+        <!-- 标签页导航 -->
         <div class="tabs">
-            <div class="tab active" onclick="switchTab('all')">全部事件</div>
-            <div class="tab" onclick="switchTab('execve')">进程事件</div>
-            <div class="tab" onclick="switchTab('network')">网络事件</div>
+            <div class="tab active" onclick="switchTab('all', this)">全部事件</div>
+            <div class="tab" onclick="switchTab('execve', this)">进程事件</div>
+            <div class="tab" onclick="switchTab('network', this)">网络事件</div>
+            <div class="tab" onclick="switchTab('policy', this)">策略配置</div>
         </div>
 
         <!-- 全部事件 -->
@@ -386,6 +662,7 @@
                             <th>PPID</th>
                             <th>进程名</th>
                             <th>命令</th>
+                            <th>操作</th>
                         </tr>
                     </thead>
                     <tbody id="execveBody">
@@ -428,9 +705,59 @@
                 </div>
             </div>
         </div>
+
+        <!-- 策略配置 -->
+        <div id="policy-panel" class="policy-panel hidden">
+            <h2>策略配置</h2>
+            
+            <!-- 监控开关 -->
+            <div class="policy-section">
+                <h3>监控开关</h3>
+                <div class="policy-controls">
+                    <div class="toggle-switch">
+                        <input type="checkbox" id="execveToggle" checked onchange="toggleExecve(this.checked)">
+                        <label for="execveToggle">进程监控</label>
+                        <span id="execveStatus" class="status-badge status-enabled">已启用</span>
+                    </div>
+                    <div class="toggle-switch">
+                        <input type="checkbox" id="networkToggle" checked onchange="toggleNetwork(this.checked)">
+                        <label for="networkToggle">网络监控</label>
+                        <span id="networkStatus" class="status-badge status-enabled">已启用</span>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- 白名单配置 -->
+            <div class="policy-section">
+                <h3>进程白名单</h3>
+                <p style="color: #64748b; font-size: 0.875rem; margin-bottom: 15px;">
+                    白名单中的进程将不会被记录和显示
+                </p>
+                <div class="whitelist-input">
+                    <input type="text" id="whitelistInput" placeholder="输入进程名（如：bash, sshd）" onkeypress="handleWhitelistKeypress(event)">
+                    <button class="btn btn-primary" onclick="addWhitelist()">添加</button>
+                </div>
+                <div id="whitelistTags" class="whitelist-tags">
+                    <!-- 白名单标签将动态添加到这里 -->
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 确认对话框 -->
+    <div id="confirmModal" class="modal">
+        <div class="modal-content">
+            <h3>确认操作</h3>
+            <p id="confirmMessage">确定要执行此操作吗？</p>
+            <div class="modal-actions">
+                <button class="btn" onclick="closeModal()">取消</button>
+                <button class="btn btn-danger" id="confirmBtn" onclick="">确认</button>
+            </div>
+        </div>
     </div>
 
     <script>
+        // ========== 全局变量 ==========
         let ws = null;
         let allEvents = [];
         let execveEvents = [];
@@ -439,8 +766,16 @@
         let startTime = Date.now();
         let eventCountLastSecond = 0;
         let lastRateUpdate = Date.now();
+        let whitelist = [];
         
-        // 连接WebSocket
+        // 系统指标
+        let systemStats = {
+            cpuUsage: 0,
+            netSpeedIn: 0,
+            netSpeedOut: 0
+        };
+        
+        // ========== WebSocket连接 ==========
         function connect() {
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
             const wsUrl = `${protocol}//${window.location.host}/ws`;
@@ -452,6 +787,8 @@
             ws.onopen = () => {
                 console.log('WebSocket connected');
                 updateConnectionStatus('connected', '已连接');
+                loadWhitelist();
+                loadPolicyStatus();
             };
             
             ws.onmessage = (event) => {
@@ -475,32 +812,47 @@
             };
         }
         
-        // 更新连接状态
         function updateConnectionStatus(status, text) {
             const el = document.getElementById('connectionStatus');
             el.className = `connection-status ${status}`;
             el.textContent = text;
         }
         
-        // 切换标签页
-        function switchTab(tab) {
+        // ========== 标签页切换 ==========
+        function switchTab(tab, element) {
             currentTab = tab;
             
             // 更新标签样式
             document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-            event.target.classList.add('active');
+            if (element) {
+                element.classList.add('active');
+            } else {
+                document.querySelector(`.tab:nth-child(${getTabIndex(tab)})`).classList.add('active');
+            }
             
             // 显示/隐藏对应内容
             document.getElementById('all-events').classList.toggle('hidden', tab !== 'all');
             document.getElementById('execve-events').classList.toggle('hidden', tab !== 'execve');
             document.getElementById('network-events').classList.toggle('hidden', tab !== 'network');
+            document.getElementById('policy-panel').classList.toggle('hidden', tab !== 'policy');
         }
         
-        // 处理事件
+        function getTabIndex(tab) {
+            const tabs = ['all', 'execve', 'network', 'policy'];
+            return tabs.indexOf(tab) + 1;
+        }
+        
+        // ========== 事件处理 ==========
         function handleEvent(data) {
-            eventCountLastSecond++;
-            
             if (!data.type || !data.data) return;
+            
+            // 处理系统指标事件
+            if (data.type === 'system') {
+                updateSystemStats(data.data);
+                return;
+            }
+            
+            eventCountLastSecond++;
             
             const event = {
                 type: data.type,
@@ -525,7 +877,43 @@
             updateStats();
         }
         
-        // 渲染全部事件列表
+        function updateSystemStats(data) {
+            // 更新CPU使用率
+            if (data.cpu_usage !== undefined) {
+                systemStats.cpuUsage = parseFloat(data.cpu_usage);
+                document.getElementById('cpuUsage').textContent = systemStats.cpuUsage.toFixed(1) + '%';
+            }
+            
+            // 更新下载速度
+            if (data.net_speed_in !== undefined) {
+                systemStats.netSpeedIn = parseFloat(data.net_speed_in);
+                document.getElementById('netSpeedIn').textContent = formatSpeed(systemStats.netSpeedIn);
+            }
+            
+            // 更新上传速度
+            if (data.net_speed_out !== undefined) {
+                systemStats.netSpeedOut = parseFloat(data.net_speed_out);
+                document.getElementById('netSpeedOut').textContent = formatSpeed(systemStats.netSpeedOut);
+            }
+        }
+        
+        function formatSpeed(kbPerSec) {
+            if (kbPerSec >= 1024) {
+                return (kbPerSec / 1024).toFixed(1) + ' MB/s';
+            }
+            return kbPerSec.toFixed(1) + ' KB/s';
+        }
+
+        function formatSize(bytes) {
+            if (bytes >= 1024 * 1024) {
+                return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+            }
+            if (bytes >= 1024) {
+                return (bytes / 1024).toFixed(1) + ' KB';
+            }
+            return bytes + ' B';
+        }
+        
         function renderAllEvent(event) {
             const tbody = document.getElementById('allEventsBody');
             const emptyState = document.getElementById('allEmptyState');
@@ -539,7 +927,7 @@
             if (event.type === 'execve') {
                 details = `PID=${event.pid} PPID=${event.ppid} ${escapeHtml(event.comm)}: ${escapeHtml(event.argv0)}`;
             } else if (event.type === 'network') {
-                details = `${event.protocol} ${event.direction} ${event.src_ip}:${event.src_port} -> ${event.dst_ip}:${event.dst_port} (${event.packet_size} bytes)`;
+                details = `${event.protocol} ${event.direction} ${event.src_ip}:${event.src_port} -> ${event.dst_ip}:${event.dst_port} (${formatSize(event.packet_size)})`;
             }
             
             row.innerHTML = `
@@ -552,7 +940,6 @@
             while (tbody.children.length > 500) tbody.removeChild(tbody.lastChild);
         }
         
-        // 渲染进程事件
         function renderExecveEvent(event) {
             const tbody = document.getElementById('execveBody');
             const emptyState = document.getElementById('execveEmptyState');
@@ -569,13 +956,15 @@
                 <td class="ppid">${event.ppid}</td>
                 <td class="comm">${escapeHtml(event.comm)}</td>
                 <td class="argv0" title="${escapeHtml(event.argv0)}">${escapeHtml(event.argv0)}</td>
+                <td>
+                    <button class="btn btn-danger btn-small" onclick="killProcess(${event.pid}, '${escapeHtml(event.comm)}')">终止</button>
+                </td>
             `;
             
             tbody.insertBefore(row, tbody.firstChild);
             while (tbody.children.length > 500) tbody.removeChild(tbody.lastChild);
         }
         
-        // 渲染网络事件
         function renderNetworkEvent(event) {
             const tbody = document.getElementById('networkBody');
             const emptyState = document.getElementById('networkEmptyState');
@@ -595,7 +984,7 @@
                 <td><span class="direction ${directionClass}">${event.direction}</span></td>
                 <td class="ip">${event.src_ip}:${event.src_port}</td>
                 <td class="ip">${event.dst_ip}:${event.dst_port}</td>
-                <td class="packet-size">${event.packet_size}</td>
+                <td class="packet-size">${formatSize(event.packet_size)}</td>
                 <td class="comm">${escapeHtml(event.comm)}</td>
             `;
             
@@ -603,7 +992,142 @@
             while (tbody.children.length > 500) tbody.removeChild(tbody.lastChild);
         }
         
-        // 更新统计
+        // ========== 进程治理 ==========
+        function killProcess(pid, comm) {
+            showConfirm(`确定要终止进程 "${comm}" (PID: ${pid}) 吗？`, () => {
+                fetch(`/api/process/kill/${pid}`, { method: 'POST' })
+                    .then(res => res.json())
+                    .then(data => {
+                        alert(data.message || '操作成功');
+                    })
+                    .catch(err => {
+                        alert('操作失败: ' + err.message);
+                    });
+            });
+        }
+        
+        function forceKillProcess(pid, comm) {
+            showConfirm(`确定要强制终止进程 "${comm}" (PID: ${pid}) 吗？此操作不可恢复。`, () => {
+                fetch(`/api/process/kill/${pid}/force`, { method: 'POST' })
+                    .then(res => res.json())
+                    .then(data => {
+                        alert(data.message || '操作成功');
+                    })
+                    .catch(err => {
+                        alert('操作失败: ' + err.message);
+                    });
+            });
+        }
+        
+        // ========== 策略管理 ==========
+        function loadPolicyStatus() {
+            fetch('/api/policy/status')
+                .then(res => res.json())
+                .then(data => {
+                    document.getElementById('execveToggle').checked = data.execve_enabled;
+                    document.getElementById('networkToggle').checked = data.network_enabled;
+                    updateStatusBadge('execve', data.execve_enabled);
+                    updateStatusBadge('network', data.network_enabled);
+                })
+                .catch(err => console.error('Failed to load policy status:', err));
+        }
+        
+        function toggleExecve(enabled) {
+            fetch(`/api/policy/execve/${enabled}`, { method: 'POST' })
+                .then(res => res.json())
+                .then(data => {
+                    updateStatusBadge('execve', data.execve_enabled);
+                })
+                .catch(err => {
+                    alert('操作失败: ' + err.message);
+                    document.getElementById('execveToggle').checked = !enabled;
+                });
+        }
+        
+        function toggleNetwork(enabled) {
+            fetch(`/api/policy/network/${enabled}`, { method: 'POST' })
+                .then(res => res.json())
+                .then(data => {
+                    updateStatusBadge('network', data.network_enabled);
+                })
+                .catch(err => {
+                    alert('操作失败: ' + err.message);
+                    document.getElementById('networkToggle').checked = !enabled;
+                });
+        }
+        
+        function updateStatusBadge(type, enabled) {
+            const badge = document.getElementById(`${type}Status`);
+            if (enabled) {
+                badge.className = 'status-badge status-enabled';
+                badge.textContent = '已启用';
+            } else {
+                badge.className = 'status-badge status-disabled';
+                badge.textContent = '已禁用';
+            }
+        }
+        
+        function loadWhitelist() {
+            fetch('/api/policy/whitelist')
+                .then(res => res.json())
+                .then(data => {
+                    whitelist = data.whitelist || [];
+                    renderWhitelist();
+                })
+                .catch(err => console.error('Failed to load whitelist:', err));
+        }
+        
+        function renderWhitelist() {
+            const container = document.getElementById('whitelistTags');
+            container.innerHTML = whitelist.map(comm => `
+                <div class="whitelist-tag">
+                    <span>${escapeHtml(comm)}</span>
+                    <span class="remove" onclick="removeWhitelist('${escapeHtml(comm)}')">×</span>
+                </div>
+            `).join('');
+        }
+        
+        function addWhitelist() {
+            const input = document.getElementById('whitelistInput');
+            const comm = input.value.trim();
+            
+            if (!comm) return;
+            if (whitelist.includes(comm)) {
+                alert('该进程已在白名单中');
+                return;
+            }
+            
+            fetch('/api/policy/whitelist', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ comm })
+            })
+                .then(res => res.json())
+                .then(data => {
+                    whitelist.push(comm);
+                    renderWhitelist();
+                    input.value = '';
+                })
+                .catch(err => alert('添加失败: ' + err.message));
+        }
+        
+        function removeWhitelist(comm) {
+            fetch(`/api/policy/whitelist/${encodeURIComponent(comm)}`, { method: 'DELETE' })
+                .then(res => res.json())
+                .then(data => {
+                    whitelist = whitelist.filter(c => c !== comm);
+                    renderWhitelist();
+                })
+                .catch(err => alert('移除失败: ' + err.message));
+        }
+        
+        function handleWhitelistKeypress(event) {
+            if (event.key === 'Enter') {
+                addWhitelist();
+            }
+        }
+        
+        // ========== 工具函数 ==========
         function updateStats() {
             document.getElementById('totalEvents').textContent = allEvents.length;
             document.getElementById('execveEvents').textContent = execveEvents.length;
@@ -615,7 +1139,6 @@
             document.getElementById('uptime').textContent = `${minutes}:${seconds}`;
         }
         
-        // 更新速率指示器
         function updateRate() {
             const now = Date.now();
             const elapsed = (now - lastRateUpdate) / 1000;
@@ -633,7 +1156,6 @@
             }
         }
         
-        // 清空事件
         function clearEvents() {
             allEvents = [];
             execveEvents = [];
@@ -650,20 +1172,39 @@
             updateStats();
         }
         
-        // 重新连接
         function reconnect() {
             if (ws) ws.close();
             connect();
         }
         
-        // HTML转义
         function escapeHtml(text) {
             const div = document.createElement('div');
             div.textContent = text;
             return div.innerHTML;
         }
         
-        // 启动
+        // ========== 模态框 ==========
+        function showConfirm(message, onConfirm) {
+            document.getElementById('confirmMessage').textContent = message;
+            document.getElementById('confirmBtn').onclick = () => {
+                closeModal();
+                onConfirm();
+            };
+            document.getElementById('confirmModal').classList.add('active');
+        }
+        
+        function closeModal() {
+            document.getElementById('confirmModal').classList.remove('active');
+        }
+        
+        // 点击模态框外部关闭
+        document.getElementById('confirmModal').addEventListener('click', (e) => {
+            if (e.target.id === 'confirmModal') {
+                closeModal();
+            }
+        });
+        
+        // ========== 启动 ==========
         connect();
         setInterval(updateRate, 100);
         setInterval(updateStats, 1000);

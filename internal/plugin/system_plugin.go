@@ -6,9 +6,13 @@ import (
 	"log"
 	"time"
 
-	"github.com/shirou/gopsutil/v3/cpu"
 	"github.com/shirou/gopsutil/v3/net"
 )
+
+// GetCPUUsage 用于从eBPF获取CPU使用率的函数
+// 由main.go在加载eBPF程序后注入
+// 如果为nil，则回退到gopsutil方式
+var GetCPUUsage func() float64
 
 // SystemStats 系统统计信息
 type SystemStats struct {
@@ -106,16 +110,9 @@ func (p *SystemMonitorPlugin) initNetStats() {
 
 // collectStats 采集系统统计信息
 func (p *SystemMonitorPlugin) collectStats() {
-	// 采集CPU使用率
-	cpuPercent, err := cpu.Percent(time.Second, false)
-	if err != nil {
-		log.Printf("[%s] Failed to get CPU usage: %v", p.Name_, err)
-		return
-	}
-
 	var cpuUsage float64
-	if len(cpuPercent) > 0 {
-		cpuUsage = cpuPercent[0]
+	if GetCPUUsage != nil {
+		cpuUsage = GetCPUUsage()
 	}
 
 	// 采集网络速度
